@@ -11,12 +11,26 @@ RETURNS JSONB AS $$
 DECLARE
   v_user_id UUID;
   v_result JSONB;
+  v_debug_info JSONB;
 BEGIN
+  -- Debug: Log input parameters
+  v_debug_info := jsonb_build_object(
+    'p_phone', p_phone,
+    'p_full_name', p_full_name,
+    'p_user_type', p_user_type,
+    'auth_uid', auth.uid(),
+    'current_timestamp', now()
+  );
+  
+  -- Log debug info to server logs
+  RAISE LOG 'verify_phone_and_create_profile called with: %', v_debug_info;
+  
   -- Get current user ID
   v_user_id := auth.uid();
   
   IF v_user_id IS NULL THEN
-    RETURN jsonb_build_object('success', false, 'error', 'User not authenticated');
+    RAISE LOG 'User not authenticated in verify_phone_and_create_profile';
+    RETURN jsonb_build_object('success', false, 'error', 'User not authenticated', 'debug', v_debug_info);
   END IF;
 
   -- Update or insert profile
@@ -41,6 +55,10 @@ BEGIN
     'user_type', p_user_type
   );
 
+  -- Add debug info to response
+  v_result := v_result || jsonb_build_object('debug', v_debug_info);
+  
+  RAISE LOG 'verify_phone_and_create_profile completed with result: %', v_result;
   RETURN v_result;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

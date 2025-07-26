@@ -4,42 +4,46 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { MessageSquare } from "lucide-react"
+import { useAuth } from "@/lib/auth-context"
 
 interface AuthScreenProps {
   onComplete: () => void
+  userType: "buyer" | "seller"
 }
 
-export function AuthScreen({ onComplete }: AuthScreenProps) {
+export function AuthScreen({ onComplete, userType }: AuthScreenProps) {
   const [step, setStep] = useState<"phone" | "code">("phone")
   const [phone, setPhone] = useState("")
   const [code, setCode] = useState("")
   const [name, setName] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [errorMsg, setErrorMsg] = useState("")
+  const { signInWithPhone, verifyOtp } = useAuth()
 
   const handleSendCode = async () => {
     if (phone.length < 8 || !name.trim()) return
-
     setIsLoading(true)
-    // Simulate SMS sending
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    setErrorMsg("")
+    const { error } = await signInWithPhone(phone)
     setIsLoading(false)
+    if (!error) {
     setStep("code")
+    } else {
+      setErrorMsg("Error enviando código: " + error.message)
+    }
   }
 
   const handleVerifyCode = async () => {
     if (code.length < 4) return
-
     setIsLoading(true)
-    // Simulate code verification
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    // Store user data
-    localStorage.setItem("userPhone", phone)
-    localStorage.setItem("userName", name)
-    localStorage.setItem("isAuthenticated", "true")
-
+    setErrorMsg("")
+    const { error } = await verifyOtp(phone, code, { full_name: name, user_type: userType })
     setIsLoading(false)
+    if (!error) {
     onComplete()
+    } else {
+      setErrorMsg("Código incorrecto o expirado. Intenta de nuevo.")
+    }
   }
 
   return (
@@ -54,6 +58,7 @@ export function AuthScreen({ onComplete }: AuthScreenProps) {
             </div>
           )}
         </div>
+        {/* Role-specific UI removed as per user request */}
 
         {step === "phone" ? (
           <>
@@ -100,6 +105,8 @@ export function AuthScreen({ onComplete }: AuthScreenProps) {
                 className="text-lg py-4 text-center tracking-widest"
                 maxLength={4}
               />
+
+              {errorMsg && <p className="text-red-600 text-center mb-2">{errorMsg}</p>}
 
               <Button
                 onClick={handleVerifyCode}

@@ -2,9 +2,26 @@
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { supabase } from "@/lib/supabase"
+import { useAuth } from "@/lib/auth-context"
 import { Plus, Minus, CreditCard, Smartphone, Building } from "lucide-react"
+
+// Definir el tipo para el payload de la suscripción
+type WalletUpdatePayload = {
+  new: {
+    id: string
+    user_id: string
+    balance: number
+    total_earned: number
+    total_spent: number
+    created_at: string
+    updated_at: string
+  }
+}
 
 interface WalletProps {
   onNavigate: (screen: string) => void
@@ -19,94 +36,119 @@ interface Transaction {
 }
 
 export function Wallet({ onNavigate }: WalletProps) {
-  const [balance, setBalance] = useState(78.5)
+  const [balance, setBalance] = useState(0)
   const [customAmount, setCustomAmount] = useState("")
   const [showRechargeForm, setShowRechargeForm] = useState(false)
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<"transfer" | "qr" | null>(null)
-  const [transactions, setTransactions] = useState<Transaction[]>([
-    {
-      id: "1",
-      type: "recharge",
-      amount: 100.0,
-      description: "Recarga inicial",
-      date: new Date(Date.now() - 86400000),
-    },
-    {
-      id: "2",
-      type: "commission",
-      amount: -2.5,
-      description: "Comisión por venta - Tomates",
-      date: new Date(Date.now() - 43200000),
-    },
-    {
-      id: "3",
-      type: "commission",
-      amount: -3.75,
-      description: "Comisión por venta - Papas",
-      date: new Date(Date.now() - 21600000),
-    },
-  ])
+  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const { user } = useAuth()
 
-  const handleRecharge = (amount: number) => {
-    const newBalance = balance + amount
-    setBalance(newBalance)
+  const handleRecharge = async (amount: number) => {
+    if (!user) return
+    
+    try {
+      // Llamar a la función de recarga en Supabase
+      const { data, error } = await supabase.rpc('add_wallet_credit', {
+        p_user_id: user.id,
+        p_amount: amount,
+        p_description: `Recarga mediante ${selectedPaymentMethod === 'transfer' ? 'transferencia' : 'QR'}`,
+        p_reference_type: 'recharge'
+      })
 
-    const newTransaction: Transaction = {
-      id: Date.now().toString(),
-      type: "recharge",
-      amount: amount,
-      description: `Recarga de Bs ${amount}`,
-      date: new Date(),
+      if (error) throw error
+      
+      // Actualizar el saldo local
+      await fetchBalance()
+      
+      // Resetear el formulario
+      setShowRechargeForm(false)
+      setCustomAmount("")
+      setSelectedPaymentMethod(null)
+    } catch (error) {
+      console.error("Error al procesar la recarga:", error)
+      alert("Ocurrió un error al procesar la recarga. Por favor, inténtalo de nuevo.")
     }
-
-    setTransactions((prev) => [newTransaction, ...prev])
-
-    // Update localStorage for demo
-    localStorage.setItem("sellerBalance", newBalance.toString())
-
-    // Reset form
-    setShowRechargeForm(false)
-    setCustomAmount("")
-    setSelectedPaymentMethod(null)
   }
 
-  const handleProcessRecharge = () => {
+  const handleProcessRecharge = async () => {
     const amount = Number.parseFloat(customAmount)
-    if (amount > 0 && selectedPaymentMethod) {
-      handleRecharge(amount)
+    if (amount <= 0 || !selectedPaymentMethod) {
+      alert("Por favor ingresa un monto válido y selecciona un método de pago")
+      return
+    }
+    
+    await handleRecharge(amount)
+  }
+
+  // Función para cargar el saldo desde Supabase
+  const fetchBalance = async () => {
+    if (!user) return
+    
+    try {
+      const { data, error } = await supabase
+        .from('wallets')
+        .select('balance')
+        .eq('user_id', user.id)
+        .single()
+
+      if (error) throw error
+      
+      setBalance(Number(data?.balance) || 0)
+    } catch (error) {
+      console.error("Error al cargar el saldo:", error)
+      setBalance(0)
+    } finally {
+      setIsLoading(false)
     }
   }
 
+  // Cargar el saldo cuando el componente se monta
   useEffect(() => {
-    // Load balance from localStorage
-    const savedBalance = localStorage.getItem("sellerBalance")
-    if (savedBalance) {
-      setBalance(Number.parseFloat(savedBalance))
+    fetchBalance()
+    
+    // Suscribirse a cambios en la billetera
+    const channel = supabase
+      .channel('wallet_changes')
+      .on('postgres_changes', 
+        { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'wallets',
+          filter: `user_id=eq.${user?.id}`
+        }, 
+        (payload: WalletUpdatePayload) => {
+          setBalance(Number(payload.new.balance) || 0)
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
     }
-  }, [])
+  }, [user])
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20">
-      {/* Header - Sin botón de volver */}
+      {/* Header */}
       <div className="bg-white border-b px-4 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Mi Billetera</h1>
           <p className="text-sm text-gray-600">Gestiona tu saldo y transacciones</p>
         </div>
-        <img src="/logo-busqai.png" alt="Busqai" className="h-14 w-auto opacity-60" />
       </div>
 
       <div className="p-4 space-y-6">
         {/* Balance Card */}
         <Card className="p-6 text-center">
           <p className="text-sm text-gray-600 mb-2">Saldo disponible</p>
-          <p className={`text-4xl font-bold mb-4 ${balance >= 0 ? "text-green-600" : "text-red-600"}`}>
+          <p className={`text-4xl font-bold mb-4 ${balance > 0 ? "text-green-600" : "text-red-600"}`}>
             Bs {balance.toFixed(2)}
           </p>
 
-          {balance < 0 && (
+          {balance <= 0 && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
-              <p className="text-sm text-red-700">Saldo negativo. Tus productos están ocultos hasta que recargues.</p>
+              <p className="text-sm text-red-700">Saldo en 0 o negativo. Tus productos no se mostraran al publico hasta que recargues.</p>
             </div>
           )}
         </Card>

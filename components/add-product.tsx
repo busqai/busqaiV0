@@ -1,12 +1,17 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Camera, Upload, ArrowLeft, Check, Scale, Package } from "lucide-react"
+import { Textarea } from "@/components/ui/textarea"
+import { ArrowLeft, Camera, Upload, MapPin, Sparkles, Check, Scale, Package } from "lucide-react"
+import { useImageCapture } from "@/hooks/use-image-capture"
+import { useImageUpload } from "@/hooks/use-image-upload"
+import { useAppStore } from "@/lib/store"
+import { createProduct } from "@/lib/supabase"
 
 interface AddProductProps {
   onNavigate: (screen: string) => void
@@ -15,14 +20,36 @@ interface AddProductProps {
 export function AddProduct({ onNavigate }: AddProductProps) {
   const [step, setStep] = useState(1)
   const [productData, setProductData] = useState({
-    image: "",
     title: "",
     category: "",
     price: "",
+    unit: "",
+    description: "",
+    image: null as string | null,
+    location: "",
     stock: "",
-    unit: "kg", // kg, unidad, libra, arroba, etc.
+    lat: null as number | null,
+    lng: null as number | null,
   })
+  const { captureFromCamera, selectFromGallery, isCapturing } = useImageCapture()
+  const { uploadProductImage, isUploading } = useImageUpload()
+  const { user } = useAppStore()
   const [showSuccess, setShowSuccess] = useState(false)
+
+  // Capturar ubicación al iniciar el flujo
+  useEffect(() => {
+    if (productData.lat === null || productData.lng === null) {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            setProductData((prev) => ({ ...prev, lat: pos.coords.latitude, lng: pos.coords.longitude }))
+          },
+          () => {},
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        )
+      }
+    }
+  }, [])
 
   const categories = [
     { value: "verduras", label: "Verduras y Hortalizas", icon: "🥬" },
@@ -48,10 +75,47 @@ export function AddProduct({ onNavigate }: AddProductProps) {
     { value: "atado", label: "Atado" },
   ]
 
-  const handleImageUpload = (type: "camera" | "gallery") => {
-    // Simulate image capture/selection
-    setProductData((prev) => ({ ...prev, image: "/placeholder.svg?height=200&width=200" }))
-    setStep(2)
+  const handleImageUpload = async (type: "camera" | "gallery") => {
+    try {
+      let result
+      
+      if (type === "camera") {
+        result = await captureFromCamera({ maxWidth: 1200, maxHeight: 1200, quality: 0.8 })
+      } else {
+        result = await selectFromGallery({ maxWidth: 1200, maxHeight: 1200, quality: 0.8 })
+      }
+
+      if (result.error) {
+        alert(`Error: ${result.error}`)
+        return
+      }
+
+      if (result.file && result.dataUrl && user?.id) {
+        // Show preview immediately
+        setProductData((prev) => ({
+          ...prev,
+          image: result.dataUrl as string // We know this is a string because of the check above
+        }))
+        setStep(2)
+        
+        // Upload to backend in the background
+        const uploadResult = await uploadProductImage(result.file, user.id)
+        
+        if (uploadResult.error) {
+          console.error('Upload error:', uploadResult.error)
+          // Keep the preview but log the error
+        } else if (uploadResult.url) {
+          // Update with final URL
+          setProductData((prev) => ({
+            ...prev,
+            image: uploadResult.url as string
+          }))
+        }
+      }
+    } catch (error) {
+      console.error('Image upload error:', error)
+      alert('Error al subir la imagen. Inténtalo de nuevo.')
+    }
   }
 
   const handleAutoTag = () => {
@@ -101,12 +165,47 @@ export function AddProduct({ onNavigate }: AddProductProps) {
     }
   }
 
-  const handleSubmit = () => {
-    setShowSuccess(true)
-    setTimeout(() => {
-      onNavigate("sellerDashboard")
-    }, 2000)
-  }
+  const handleSubmit = async () => {
+    if (!user) {
+      alert("Debes iniciar sesión para publicar un producto");
+      onNavigate("login");
+      return;
+    }
+
+    if (!productData.lat || !productData.lng) {
+      alert("No se pudo obtener tu ubicación. Por favor, asegúrate de que la aplicación tenga permisos de ubicación.");
+      return;
+    }
+
+    try {
+      const { data, error } = await createProduct({
+        seller_id: user.id,
+        title: productData.title,
+        description: productData.description || "Sin descripción",
+        category: productData.category,
+        price: Number(productData.price),
+        stock: Number(productData.stock),
+        image_url: productData.image || "",
+        latitude: productData.lat,
+        longitude: productData.lng,
+        address: productData.location || "Ubicación no especificada",
+      });
+
+      if (error) {
+        console.error("Error al guardar el producto:", error);
+        alert(`Error al publicar el producto: ${error.message}`);
+        return;
+      }
+
+      setShowSuccess(true);
+      setTimeout(() => {
+        onNavigate("main");
+      }, 2000);
+    } catch (error) {
+      console.error("Error inesperado:", error);
+      alert("Ocurrió un error inesperado al publicar el producto");
+    }
+  };
 
   const getStockLabel = () => {
     switch (productData.unit) {
@@ -129,6 +228,24 @@ export function AddProduct({ onNavigate }: AddProductProps) {
     }
   }
 
+  const [errors, setErrors] = useState<{[key: string]: string}>({});
+
+  const validateStep2 = () => {
+    const newErrors: {[key: string]: string} = {};
+    if (!productData.category) newErrors.category = "Selecciona una categoría";
+    if (!productData.title.trim()) newErrors.title = "El nombre es obligatorio";
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+  
+  const validateStep3 = () => {
+    const newErrors: {[key: string]: string} = {};
+    if (!productData.price || isNaN(Number(productData.price)) || Number(productData.price) <= 0) newErrors.price = "Precio válido requerido";
+    if (!productData.stock || isNaN(Number(productData.stock)) || Number(productData.stock) <= 0) newErrors.stock = "Stock válido requerido";
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
   if (showSuccess) {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center justify-center px-6">
@@ -149,7 +266,7 @@ export function AddProduct({ onNavigate }: AddProductProps) {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => (step > 1 ? setStep(step - 1) : onNavigate("sellerDashboard"))}
+          onClick={() => (step > 1 ? setStep(step - 1) : onNavigate("main"))} // Cambiado a 'main'
         >
           <ArrowLeft className="w-5 h-5" />
         </Button>
@@ -178,35 +295,31 @@ export function AddProduct({ onNavigate }: AddProductProps) {
             </div>
 
             <div className="space-y-4">
-              <Card
-                className="p-6 cursor-pointer hover:shadow-md transition-shadow border-2 hover:border-orange-200"
+              <Button
+                variant="outline"
+                size="lg"
+                className="w-full h-32 flex-col gap-3 bg-white border-2 border-dashed border-gray-300 hover:border-[#FF7300] hover:bg-orange-50"
                 onClick={() => handleImageUpload("camera")}
+                disabled={isCapturing || isUploading}
               >
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center justify-center w-12 h-12 rounded-full bg-gradient-to-r from-[#FF7300] to-[#FFE100]">
-                    <Camera className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900">Tomar foto</h3>
-                    <p className="text-sm text-gray-600">Usa la cámara de tu teléfono</p>
-                  </div>
-                </div>
-              </Card>
+                <Camera className="w-8 h-8 text-gray-400" />
+                <span className="text-sm font-medium text-gray-600">
+                  {isCapturing ? "Accediendo a cámara..." : "Tomar foto"}
+                </span>
+              </Button>
 
-              <Card
-                className="p-6 cursor-pointer hover:shadow-md transition-shadow border-2 hover:border-orange-200"
+              <Button
+                variant="outline"
+                size="lg"
+                className="w-full h-32 flex-col gap-3 bg-white border-2 border-dashed border-gray-300 hover:border-[#FF7300] hover:bg-orange-50"
                 onClick={() => handleImageUpload("gallery")}
+                disabled={isCapturing || isUploading}
               >
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center justify-center w-12 h-12 rounded-full bg-gradient-to-r from-[#FF7300] to-[#FFE100]">
-                    <Upload className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900">Seleccionar de galería</h3>
-                    <p className="text-sm text-gray-600">Elige una foto existente</p>
-                  </div>
-                </div>
-              </Card>
+                <Upload className="w-8 h-8 text-gray-400" />
+                <span className="text-sm font-medium text-gray-600">
+                  {isCapturing ? "Seleccionando..." : isUploading ? "Subiendo imagen..." : "Seleccionar de galería"}
+                </span>
+              </Button>
             </div>
           </div>
         )}
@@ -270,7 +383,7 @@ export function AddProduct({ onNavigate }: AddProductProps) {
               </div>
 
               <Button
-                onClick={() => setStep(3)}
+                onClick={() => { if (validateStep2()) setStep(3); }}
                 disabled={!productData.title || !productData.category}
                 className="w-full bg-gradient-to-r from-[#FF7300] to-[#FFE100] hover:from-[#E66600] hover:to-[#F0D000] text-white"
               >
@@ -384,6 +497,9 @@ export function AddProduct({ onNavigate }: AddProductProps) {
                     <span className="text-sm text-gray-600">
                       Stock: {productData.stock} {productData.unit}
                     </span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-2">
+                    Ubicación capturada: {productData.lat && productData.lng ? `${productData.lat.toFixed(5)}, ${productData.lng.toFixed(5)}` : "No disponible"}
                   </div>
                 </div>
               </div>
